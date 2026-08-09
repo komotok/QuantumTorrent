@@ -1,0 +1,19 @@
+Peer country data
+=================
+
+dbip-country-lite.mmdb is the DB-IP IP to Country Lite database,
+released 2026-08 and downloaded from https://db-ip.com/db/download/ip-to-country-lite
+
+  IP Geolocation by DB-IP (https://db-ip.com)
+  Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0)
+  https://creativecommons.org/licenses/by/4.0/
+
+The licence requires this attribution to be kept with the data and surfaced to
+users; the app shows it in Network settings under "Peer country database".
+
+Lookups are performed entirely locally. No peer address ever leaves the machine
+for the purpose of geolocation - doing so would expose the swarm to a third
+party and undermine the bind-to-interface setting.
+
+To update, download a newer dbip-country-lite-YYYY-MM.mmdb.gz, decompress it,
+and replace this file, keeping the same name.

@@ -1,0 +1,177 @@
+:root {
+  --gray-950: #14161a;
+  --gray-900: #1a1d23;
+  --gray-850: #20242c;
+  --gray-800: #262b34;
+  --gray-750: #2d323c;
+  --gray-700: #383e49;
+  --gray-600: #4b5261;
+  --gray-500: #6b7383;
+  --gray-400: #8892a0;
+  --gray-300: #aab2bd;
+  --gray-100: #e3e6ea;
+  --gray-50:  #f4f5f7;
+
+  --accent-500: #712ed6;
+  --accent-hover: #9e4de0;
+  --accent-active: #8022ac;
+  --accent-muted: rgba(46, 159, 214, 0.14);
+
+  --color-bg-app: var(--gray-900);       
+  --color-bg-panel: var(--gray-850);     
+  --color-bg-elevated: var(--gray-800);  
+  --color-bg-hover: var(--gray-750);
+  --color-bg-selected: var(--accent-muted);
+  --color-bg-active: var(--accent-muted);
+  --color-bg-input: var(--gray-900);     
+
+  --color-border: var(--gray-700);
+  --color-border-strong: var(--gray-600);
+
+  --color-text-primary: var(--gray-100);
+  --color-text-secondary: var(--gray-400);
+  --color-text-muted: var(--gray-500);
+  --color-text-disabled: var(--gray-600);
+  --color-text-on-accent: var(--gray-50);
+
+  --status-downloading: #534dff;
+  --status-downloading-bg: rgba(77, 159, 255, 0.14);
+  --status-seeding: #1cba49;
+  --status-seeding-bg: rgba(79, 201, 114, 0.14);
+  --status-paused: #e8e8e8;
+  --status-paused-bg: rgba(136, 146, 160, 0.14);
+  --status-checking: #e0b04d;
+  --status-checking-bg: rgba(224, 176, 77, 0.14);
+  --status-error: #e7262c;
+  --status-error-bg: rgba(229, 85, 91, 0.14);
+  --status-queued: #7c8ba1;
+  --status-queued-bg: rgba(124, 139, 161, 0.14);
+
+  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  --text-xs: 12px;   
+  --text-sm: 13px;  
+  --text-base: 14px; 
+  --text-md: 16px;   
+  --text-lg: 18px;
+  --text-xl: 20px;   
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.43; 
+
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  --ls-body: 0.01071em;
+  --ls-button: 0.02857em;
+  --ls-caption: 0.03333em;
+  --ls-overline: 0.08333em;
+  --ls-title: 0.0075em;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --radius-sm: 2px;
+  --radius-md: 20px;
+  --radius-lg: 40px;
+  --radius-full: 9999px;
+
+  --shadow-e1: 0 2px 1px -1px rgba(0,0,0,0.2), 0 1px 1px 0 rgba(0,0,0,0.14), 0 1px 3px 0 rgba(0,0,0,0.12);
+  --shadow-e2: 0 3px 1px -2px rgba(0,0,0,0.2), 0 2px 2px 0 rgba(0,0,0,0.14), 0 1px 5px 0 rgba(0,0,0,0.12);
+  --shadow-e4: 0 2px 4px -1px rgba(0,0,0,0.2), 0 4px 5px 0 rgba(0,0,0,0.14), 0 1px 10px 0 rgba(0,0,0,0.12);
+  --shadow-e8: 0 5px 5px -3px rgba(0,0,0,0.2), 0 8px 10px 1px rgba(0,0,0,0.14), 0 3px 14px 2px rgba(0,0,0,0.12);
+  --shadow-e24: 0 11px 15px -7px rgba(0,0,0,0.2), 0 24px 38px 3px rgba(0,0,0,0.14), 0 9px 46px 8px rgba(0,0,0,0.12);
+
+  --shadow-sm: var(--shadow-e1);
+  --shadow-md: var(--shadow-e8);
+  --shadow-focus: 0 0 0 2px var(--accent-muted), 0 0 0 1px var(--accent-500);
+
+  --sidebar-width: 220px;
+  --toolbar-height: 48px;  
+  --statusbar-height: 32px;
+  --detail-panel-height: 240px;
+  --row-height: 36px;       
+  --header-row-height: 40px;
+
+  --progress-track: var(--gray-700);
+  --progress-height: 8px;    
+
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+  --ease-accelerate: cubic-bezier(0.4, 0, 1, 1);
+
+  --duration-shortest: 150ms;
+  --duration-shorter: 200ms;
+  --duration-short: 250ms;
+  --duration-standard: 300ms;
+  --duration-complex: 375ms; 
+  --duration-enter: 225ms;   
+
+  --transition-fast: var(--duration-shortest) var(--ease-standard);
+  --transition-base: var(--duration-short) var(--ease-standard);
+
+  --color-on-accent-solid: #fff;
+  --color-overlay: rgba(0,0,0,0.5);
+
+  --search-field-width: 190px;
+  --progress-width: 120px;
+  --icon-button-size: 32px;
+  --icon-button-size-sm: 24px;
+  --divider-height: 20px;
+  --scrollbar-size: 10px;
+
+  --checkbox-size: 18px;
+  --checkbox-radius: 6px;
+  --switch-width: 34px;
+  --switch-track-height: 14px;
+  --switch-thumb-size: 20px;
+
+  --modal-width: 480px;
+  --modal-width-wide: 680px;
+  --modal-width-settings: 600px;
+  --menu-min-width: 200px;
+  --menu-max-height: 260px;
+  --filepicker-max-height: 320px;
+
+  --torrent-min-width: 868px;
+  --torrent-columns:
+    minmax(180px, 1fr)
+    100px
+    160px
+    140px
+    100px
+    100px
+    88px;
+  --result-columns: minmax(200px, 1fr) 110px 100px 180px;
+  --result-columns-compact: minmax(200px, 1fr) 110px 180px;
+
+  --duration-ripple: 500ms;
+  --duration-row-exit: 370ms;
+  --duration-menu: 150ms;
+  --duration-menu-out: 150ms;
+  --duration-spinner: 900ms;
+  --duration-shimmer: 1.8s;
+  --duration-pulse: 1.6s;
+  --duration-view-in: 220ms;
+  --duration-view-out: 130ms;
+
+  --z-dropdown: 100;
+  --z-tooltip: 200;
+  --z-modal-backdrop: 300;
+  --z-modal: 310;
+  --z-toast: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition-fast: 0ms;
+    --transition-base: 0ms;
+  }
+}
