@@ -1323,8 +1323,10 @@ strong, b { font-weight: var(--font-medium); }
   font-display: swap;
 }
 .peer-flag {
-  font-family: "Twemoji Country Flags", var(--font-sans);
   font-size: var(--text-md);
   line-height: 1;
   text-align: center;
+}
+:root[data-os="windows"] .peer-flag {
+  font-family: "Twemoji Country Flags", var(--font-sans);
 }
