@@ -1,0 +1,38 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Vendored forks of librqbit / librqbit-tracker-comms live in src-tauri/vendor
+# and MUST be tracked - they carry our patches (see vendor/librqbit/PATCHES.md).
+# A bare "vendor/" rule is a common Rust habit; don't add one.
+src-tauri/vendor/**/node_modules/
+src-tauri/vendor/**/target/
+
+# Tauri build leftovers
+src-tauri/WixTools/
+src-tauri/gen/
+
+# Windows shell noise
+Thumbs.db
+desktop.ini

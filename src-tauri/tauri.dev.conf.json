@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "QuantumTorrent Dev",
+  "identifier": "com.komotok.qtorrent.dev",
+  "app": {
+    "windows": [
+      {
+        "title": "QuantumTorrent (dev)"
+      }
+    ]
+  }
+}

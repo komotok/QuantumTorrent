@@ -1,0 +1,17 @@
+[
+  {
+    "id": "internet-archive",
+    "name": "Internet Archive",
+    "site": "https://archive.org",
+    "kind": "json",
+    "url": "https://archive.org/advancedsearch.php?q={query}+AND+format%3A%22Archive+BitTorrent%22&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=item_size&sort%5B%5D=downloads+desc&rows=60&page=1&output=json",
+    "browseUrl": "https://archive.org/advancedsearch.php?q=format%3A%22Archive+BitTorrent%22+AND+collection%3A%28prelinger+OR+opensource_movies+OR+librivoxaudio+OR+feature_films+OR+netlabels%29+AND+-mediatype%3Acollection&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=item_size&sort%5B%5D=downloads+desc&rows=60&page=1&output=json",
+    "json": {
+      "results": "response/docs",
+      "name": "title",
+      "size": "item_size",
+      "link": "identifier",
+      "linkTemplate": "https://archive.org/download/{value}/{value}_archive.torrent"
+    }
+  }
+]
