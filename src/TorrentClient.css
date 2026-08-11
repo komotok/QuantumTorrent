@@ -147,9 +147,17 @@ a {
   margin-left: auto;
   flex: 0 1 var(--search-field-width);
   min-width: 0;
-  transition: flex-basis var(--duration-complex) var(--ease-standard);
+  transition:
+    flex-basis var(--duration-complex) var(--ease-standard),
+    opacity var(--duration-short) var(--ease-standard);
 }
 .search-field-grow { flex-basis: 100%; }
+.search-field-hidden {
+  flex-basis: 0;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
 @media (prefers-reduced-motion: reduce) {
   .search-field { transition: none; }
 }
@@ -874,12 +882,25 @@ a {
 }
 .btn.active { background: var(--color-bg-selected); color: var(--color-text-primary); }
 
-.modal-settings { width: var(--modal-width-settings); border-radius: var(--radius-md); }
-
 .settings-list {
   display: flex;
   flex-direction: column;
   margin: 0 calc(var(--space-6) * -1);
+}
+
+/* On the settings page the list is the page, so it drops the modal's
+   bleed-to-edge negative margin and lets the row borders span the content. */
+.settings-page {
+  padding: var(--space-4) var(--space-6) var(--space-6);
+  max-width: 900px;
+}
+.settings-page .settings-list { margin: 0; }
+.settings-page .setting-row { padding-left: 0; padding-right: 0; }
+.settings-note {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-xs);
+  letter-spacing: var(--ls-caption);
+  color: var(--color-text-muted);
 }
 .setting-row {
   display: flex;
@@ -1001,13 +1022,6 @@ a {
 .select-option.active { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .select-option.selected { color: var(--color-text-primary); font-weight: var(--font-medium); }
 .select-option.selected.active { background: var(--color-bg-selected); }
-
-.modal-actions-note {
-  margin-right: auto;
-  font-size: var(--text-xs);
-  letter-spacing: var(--ls-caption);
-  color: var(--color-text-muted);
-}
 
 .switch { position: relative; display: inline-flex; cursor: pointer; }
 .switch input {
@@ -1272,7 +1286,19 @@ strong, b { font-weight: var(--font-medium); }
   padding: 2px var(--space-4);
   font-size: var(--text-sm);
 }
-.detail-file { grid-template-columns: 16px minmax(0, 1fr) 90px 44px 84px 90px auto; }
+.detail-file { grid-template-columns: 16px minmax(0, 1fr) 90px 44px 84px 90px 56px auto; }
+.detail-file-actions {
+  display: flex;
+  gap: var(--space-1);
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.detail-file:hover .detail-file-actions,
+.detail-file-actions:focus-within { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .detail-file-actions { transition: none; }
+}
 .detail-peer { grid-template-columns: 24px minmax(0, 1fr) 130px 70px 90px 90px 80px 80px 70px; }
 .detail-file:hover, .detail-peer:hover { background: var(--color-bg-hover); }
 
