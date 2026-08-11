@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect, type ReactNo
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./torrent-theme.css";
 import "./TorrentClient.css";
 
@@ -147,7 +148,7 @@ const STATUS_LABELS: Record<TorrentStatus, string> = {
 };
 
 type FilterState = "all" | TorrentStatus;
-const FILTERS: FilterState[] = ["all", "downloading", "seeding", "paused", "checking", "error"];
+const FILTERS: FilterState[] = ["all", "downloading", "seeding", "queued", "paused", "checking", "error"];
 
 type Units = "binary" | "decimal";
 
@@ -225,6 +226,16 @@ function iconForFile(path: string): keyof typeof ICONS {
   const dot = base.lastIndexOf(".");
   if (dot <= 0) return "file";
   return EXT_TO_ICON[base.slice(dot + 1).toLowerCase()] ?? "file";
+}
+
+const STREAMABLE_EXTS = new Set([
+  "mp4", "m4v", "webm", "mkv", "avi", "mov", "wmv", "flv", "mpg", "mpeg", "ts", "m2ts",
+  "mp3", "m4a", "flac", "ogg", "oga", "opus", "wav", "aac", "wma",
+]);
+
+function isStreamable(path: string): boolean {
+  const dot = path.lastIndexOf(".");
+  return dot > 0 && STREAMABLE_EXTS.has(path.slice(dot + 1).toLowerCase());
 }
 
 function Icon({
@@ -398,6 +409,11 @@ interface Settings {
   geoipPath: string | null;
   downloadLimit: number | null;
   uploadLimit: number | null;
+  compact: boolean;
+  seedRatioLimit: number | null;
+  seedTimeLimit: number | null;
+  maxActiveDownloads: number | null;
+  minimizeToTray: boolean;
 }
 
 interface GeoipStatus {
@@ -702,8 +718,12 @@ export default function TorrentClient() {
   const [torrents, setTorrents] = useState<Torrent[]>([]);
   const [conn, setConn] = useState<SessionStatus | null>(null);
   const [units, setUnits] = useState<Units>("binary");
+  const [compact, setCompact] = useState(() => {
+    try { return localStorage.getItem("compact") === "1"; } catch { return false; }
+  });
   const [filter, setFilter] = useState<FilterState>("all");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>(() => {
     try { return (localStorage.getItem("sortKey") as SortKey) || "id"; } catch { return "id"; }
@@ -734,9 +754,17 @@ export default function TorrentClient() {
 
   useEffect(() => {
     invoke<Settings>("get_settings")
-      .then(s => setUnits(s.units))
+      .then(s => {
+        setUnits(s.units);
+        setCompact(s.compact);
+      })
       .catch(e => console.error("get_settings failed:", e));
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.density = compact ? "compact" : "comfortable";
+    try { localStorage.setItem("compact", compact ? "1" : "0"); } catch {}
+  }, [compact]);
 
   useEffect(() => {
     const block = (e: Event) => e.preventDefault();
@@ -761,10 +789,11 @@ export default function TorrentClient() {
   const [filesModal, setFilesModal] = useState<{ id: number; name: string; files: FileEntry[] } | null>(null);
   const [filesPicked, setFilesPicked] = useState<Set<number>>(new Set());
 
-  const [removeTarget, setRemoveTarget] = useState<Torrent | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<Torrent[] | null>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
 
-  const [view, setView] = useState<"torrents" | "search">("torrents");
+  const [view, setView] = useState<"torrents" | "search" | "settings">("torrents");
+  const [settingsTab, setSettingsTab] = useState<"network" | "app">("network");
   const [toolbarExpanded, setToolbarExpanded] = useState(true);
   const toolbarTimer = useRef<number | undefined>(undefined);
 
@@ -824,7 +853,6 @@ export default function TorrentClient() {
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
-  const [showSettings, setShowSettings] = useState(false);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [interfaces, setInterfaces] = useState<NetworkInterface[]>([]);
   const [geoip, setGeoip] = useState<GeoipStatus | null>(null);
@@ -906,12 +934,22 @@ export default function TorrentClient() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        const el = e.target as HTMLElement | null;
+        const typing = el?.tagName === "INPUT" || el?.tagName === "TEXTAREA";
+        const modalOpen = removeTarget || filesModal || addStage;
+        if (typing || modalOpen || view !== "torrents") return;
+        e.preventDefault();
+        setSelectedIds(new Set(visible.map(t => t.id)));
+        return;
+      }
       if (e.key !== "Escape") return;
       if (removeTarget) setRemoveTarget(null);
       else if (view === "search") leaveSearch();
-      else if (showSettings) setShowSettings(false);
+      else if (view === "settings") leaveSettings();
       else if (filesModal) setFilesModal(null);
       else if (addStage) closeAddDialog();
+      else if (selectedIds.size > 0) { setSelectedIds(new Set()); setSelectedId(null); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -930,6 +968,35 @@ export default function TorrentClient() {
     });
 
   const rows = useExitTransition(visible, ROW_EXIT_MS);
+
+  function selectOnly(id: number) {
+    setSelectedIds(new Set([id]));
+    setSelectedId(id);
+  }
+
+  function handleRowClick(e: React.MouseEvent, t: Torrent) {
+    if (e.shiftKey && selectedId !== null && selectedId !== t.id) {
+      const ids = visible.map(v => v.id);
+      const from = ids.indexOf(selectedId);
+      const to = ids.indexOf(t.id);
+      if (from !== -1 && to !== -1) {
+        const [lo, hi] = from < to ? [from, to] : [to, from];
+        setSelectedIds(new Set(ids.slice(lo, hi + 1)));
+        return;
+      }
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        if (next.has(t.id)) next.delete(t.id);
+        else next.add(t.id);
+        return next;
+      });
+      setSelectedId(t.id);
+      return;
+    }
+    selectOnly(t.id);
+  }
 
   useEffect(() => {
     if (!showDetail || view !== "torrents" || selectedId === null) {
@@ -1118,19 +1185,72 @@ export default function TorrentClient() {
     }
   }
 
+  async function streamUrl(id: number, fileIndex: number): Promise<string> {
+    return invoke<string>("preview_file", { id, fileIndex });
+  }
+
+  async function previewFile(id: number, fileIndex: number) {
+    try {
+      await openUrl(await streamUrl(id, fileIndex));
+    } catch (e) {
+      alert(`Could not preview: ${e}`);
+    }
+  }
+
+  async function copyStreamLink(id: number, fileIndex: number) {
+    try {
+      await navigator.clipboard.writeText(await streamUrl(id, fileIndex));
+      notify("Stream link copied — paste it into VLC or mpv");
+    } catch (e) {
+      alert(`Could not copy stream link: ${e}`);
+    }
+  }
+
   function menuItems(t: Torrent): MenuItem[] {
-    const running = t.status === "downloading" || t.status === "seeding";
-    const stopped = t.status === "paused" || t.status === "error";
+    const multi = selectedIds.size > 1 && selectedIds.has(t.id);
+    const targets = multi ? selectedTorrents : [t];
+    const n = targets.length;
+    const suffix = multi ? ` ${n} torrents` : "";
     return [
-      { label: "Pause", icon: "pause", onSelect: () => pauseTorrent(t.id), disabled: !running },
-      { label: "Resume", icon: "play", onSelect: () => resumeTorrent(t.id), disabled: !stopped },
-      { label: "Force reannounce", icon: "announce", onSelect: () => reannounce(t.id), separatorBefore: true },
-      { label: "Force recheck", icon: "recheck", onSelect: () => recheckTorrent(t) },
-      { label: "Move data", icon: "move", onSelect: () => moveTorrent(t), disabled: moving !== null },
-      { label: "Open containing folder", icon: "folder", onSelect: () => openFolder(t.id) },
-      { label: "Files", icon: "files", onSelect: () => { setSelectedId(t.id); openFilesModal(t.id); } },
-      { label: "Copy magnet link", icon: "copy", onSelect: () => copyMagnet(t.id) },
-      { label: "Remove", icon: "remove", onSelect: () => setRemoveTarget(t), danger: true, separatorBefore: true },
+      {
+        label: `Pause${suffix}`,
+        icon: "pause",
+        onSelect: () => targets.filter(isRunning).forEach(x => pauseTorrent(x.id)),
+        disabled: !targets.some(isRunning),
+      },
+      {
+        label: `Resume${suffix}`,
+        icon: "play",
+        onSelect: () => targets.filter(isStopped).forEach(x => resumeTorrent(x.id)),
+        disabled: !targets.some(isStopped),
+      },
+      {
+        label: `Force reannounce${suffix}`,
+        icon: "announce",
+        onSelect: () => targets.forEach(x => reannounce(x.id)),
+        separatorBefore: true,
+      },
+      {
+        label: `Force recheck${suffix}`,
+        icon: "recheck",
+        onSelect: () => targets.forEach(x => recheckTorrent(x)),
+      },
+      { label: "Move data", icon: "move", onSelect: () => moveTorrent(t), disabled: multi || moving !== null },
+      { label: "Open containing folder", icon: "folder", onSelect: () => openFolder(t.id), disabled: multi },
+      {
+        label: "Files",
+        icon: "files",
+        onSelect: () => { selectOnly(t.id); openFilesModal(t.id); },
+        disabled: multi,
+      },
+      { label: "Copy magnet link", icon: "copy", onSelect: () => copyMagnet(t.id), disabled: multi },
+      {
+        label: `Remove${suffix}`,
+        icon: "remove",
+        onSelect: () => setRemoveTarget(targets),
+        danger: true,
+        separatorBefore: true,
+      },
     ];
   }
 
@@ -1189,10 +1309,15 @@ export default function TorrentClient() {
       setDraft(s);
       setPortMode(s.listenPort == null ? "auto" : "fixed");
       setInterfaces(ifaces);
-      setShowSettings(true);
+      setView("settings");
     } catch (e) {
       alert(`Could not load settings: ${e}`);
     }
+  }
+
+  function leaveSettings() {
+    setView("torrents");
+    setSettingsError(null);
   }
 
   async function handleSaveSettings() {
@@ -1207,7 +1332,8 @@ export default function TorrentClient() {
       const status = await invoke<SessionStatus>("set_settings", { settings: payload });
       setConn(status);
       setUnits(payload.units);
-      setShowSettings(false);
+      setCompact(payload.compact);
+      leaveSettings();
     } catch (e) {
       setSettingsError(String(e));
     } finally {
@@ -1218,16 +1344,21 @@ export default function TorrentClient() {
   async function handleConfirmRemove() {
     if (!removeTarget) return;
     setBusy(true);
-    try {
-      await invoke("remove_torrent", { id: removeTarget.id, deleteFiles });
-      setSelectedId(null);
-      setRemoveTarget(null);
-      setDeleteFiles(false);
-    } catch (e) {
-      alert(`Failed to remove: ${e}`);
-    } finally {
-      setBusy(false);
+    const failed: string[] = [];
+    for (const t of removeTarget) {
+      try {
+        await invoke("remove_torrent", { id: t.id, deleteFiles });
+      } catch (e) {
+        failed.push(`${t.name}: ${e}`);
+      }
     }
+    const removed = new Set(removeTarget.map(t => t.id));
+    setSelectedIds(prev => new Set([...prev].filter(id => !removed.has(id))));
+    setSelectedId(id => (id !== null && removed.has(id) ? null : id));
+    setRemoveTarget(null);
+    setDeleteFiles(false);
+    setBusy(false);
+    if (failed.length > 0) alert(`Failed to remove:\n${failed.join("\n")}`);
   }
 
   async function pauseTorrent(id: number) {
@@ -1246,12 +1377,16 @@ export default function TorrentClient() {
     }
   }
 
-  function handlePause() { if (selectedId !== null) pauseTorrent(selectedId); }
-  function handleResume() { if (selectedId !== null) resumeTorrent(selectedId); }
+  const isRunning = (t: Torrent) => t.status === "downloading" || t.status === "seeding";
+  const isStopped = (t: Torrent) => t.status === "paused" || t.status === "error";
 
-  const sel = selectedId !== null ? torrents.find(t => t.id === selectedId) ?? null : null;
-  const canPause = sel?.status === "downloading" || sel?.status === "seeding";
-  const canResume = sel?.status === "paused" || sel?.status === "error";
+  const selectedTorrents = torrents.filter(t => selectedIds.has(t.id));
+
+  function handlePause() { selectedTorrents.filter(isRunning).forEach(t => pauseTorrent(t.id)); }
+  function handleResume() { selectedTorrents.filter(isStopped).forEach(t => resumeTorrent(t.id)); }
+
+  const canPause = selectedTorrents.some(isRunning);
+  const canResume = selectedTorrents.some(isStopped);
 
   const hasSeeders = (searchResults ?? []).some(r => r.seeders != null);
 
@@ -1294,6 +1429,30 @@ export default function TorrentClient() {
                 {fileRates[f.index] ? `${formatSize(fileRates[f.index], units)}/s` : ""}
               </span>
               <span className="num detail-file-size">{f.sizeStr}</span>
+              <span className="detail-file-actions">
+                {f.selected && isStreamable(f.path) && selectedId !== null && (
+                  <>
+                    <button
+                      className="icon-btn icon-btn-sm"
+                      type="button"
+                      title="Preview while downloading"
+                      aria-label="Preview while downloading"
+                      onClick={() => previewFile(selectedId, f.index)}
+                    >
+                      <Icon name="play" size={16} />
+                    </button>
+                    <button
+                      className="icon-btn icon-btn-sm"
+                      type="button"
+                      title="Copy stream link"
+                      aria-label="Copy stream link"
+                      onClick={() => copyStreamLink(selectedId, f.index)}
+                    >
+                      <Icon name="copy" size={16} />
+                    </button>
+                  </>
+                )}
+              </span>
               {!f.selected && <span className="detail-skip">skipped</span>}
             </div>
           ))}
@@ -1352,6 +1511,319 @@ export default function TorrentClient() {
             <div className="detail-tracker" key={t} title={t}>{t}</div>
           ))
         )}
+      </div>
+    );
+  };
+
+  const renderSettingsPage = () => {
+    if (!draft) return <div className="empty-state"><p>Loading settings.</p></div>;
+
+    const network = (
+      <>
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Incoming port</div>
+            <div className="setting-desc">
+              For VPNs, select manual and enter the port provided by the VPN client.
+            </div>
+          </div>
+          <div className="setting-control">
+            <Select
+              ariaLabel="Port mode"
+              width={132}
+              value={portMode}
+              onChange={v => setPortMode(v as "auto" | "fixed")}
+              options={[
+                { value: "auto", label: "Automatic" },
+                { value: "fixed", label: "Manual" },
+              ]}
+            />
+            {portMode === "fixed" && (
+              <input
+                type="number"
+                className="filter-input port-input"
+                min={1}
+                max={65535}
+                placeholder="6881"
+                value={draft.listenPort ?? ""}
+                onChange={e =>
+                  setDraft({ ...draft, listenPort: e.target.value ? Number(e.target.value) : null })
+                }
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Network interface</div>
+            <div className="setting-desc">
+              Connects all trackers, DHT, and peers to the bound interface. Leave on Any to use
+              all interfaces. Recommended to prevent IP leaks.
+            </div>
+          </div>
+          <div className="setting-control">
+            <Select
+              ariaLabel="Network interface"
+              width={230}
+              value={draft.bindIp ?? ""}
+              onChange={v => setDraft({ ...draft, bindIp: v || null })}
+              options={[
+                { value: "", label: "Any" },
+                ...interfaces.map(i => ({
+                  value: i.ip,
+                  label: `${i.name} — ${i.ip}${i.isLoopback ? " (loopback)" : ""}`,
+                })),
+              ]}
+            />
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">UPnP forwarding</div>
+            <div className="setting-desc">
+              VPNs mostly use NAT-PMP, please manually select port for these. Routers can use UPnP.
+            </div>
+          </div>
+          <div className="setting-control">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={draft.upnp}
+                onChange={e => setDraft({ ...draft, upnp: e.target.checked })}
+              />
+              <span className="switch-track" aria-hidden="true" />
+            </label>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Speed limits</div>
+            <div className="setting-desc">Provide KiB/s. Leave empty for unlimited.</div>
+          </div>
+          <div className="setting-control">
+            <label className="limit-field">
+              <span>Down</span>
+              <input
+                type="number"
+                className="filter-input port-input"
+                min={0}
+                placeholder="∞"
+                value={draft.downloadLimit ?? ""}
+                onChange={e =>
+                  setDraft({
+                    ...draft,
+                    downloadLimit: e.target.value ? Number(e.target.value) : null,
+                  })
+                }
+              />
+            </label>
+            <label className="limit-field">
+              <span>Up</span>
+              <input
+                type="number"
+                className="filter-input port-input"
+                min={0}
+                placeholder="∞"
+                value={draft.uploadLimit ?? ""}
+                onChange={e =>
+                  setDraft({
+                    ...draft,
+                    uploadLimit: e.target.value ? Number(e.target.value) : null,
+                  })
+                }
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Peer country database</div>
+            <div className="setting-desc truncate">
+              {draft.geoipPath
+                ? draft.geoipPath
+                : geoip?.loaded
+                  ? `${geoip.databaseType ?? "Unknown"} built ${geoip.built ?? "?"} · ${
+                      geoip.attribution ?? ""
+                    }`
+                  : "No database loaded - peer flags are hidden."}
+            </div>
+          </div>
+          <div className="setting-control">
+            {draft.geoipPath && (
+              <button
+                className="btn"
+                type="button"
+                onClick={() => setDraft({ ...draft, geoipPath: null })}
+              >
+                Use bundled
+              </button>
+            )}
+            <button
+              className="btn"
+              type="button"
+              onClick={async () => {
+                const f = await open({
+                  multiple: false,
+                  filters: [{ name: "MaxMind DB", extensions: ["mmdb"] }],
+                });
+                if (typeof f === "string") setDraft({ ...draft, geoipPath: f });
+              }}
+            >
+              Choose
+            </button>
+          </div>
+        </div>
+      </>
+    );
+
+    const app = (
+      <>
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Compact mode</div>
+            <div className="setting-desc">
+              Tighter rows, smaller text and less padding throughout. Fits noticeably more on
+              screen.
+            </div>
+          </div>
+          <div className="setting-control">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={draft.compact}
+                onChange={e => setDraft({ ...draft, compact: e.target.checked })}
+              />
+              <span className="switch-track" aria-hidden="true" />
+            </label>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Size units</div>
+            <div className="setting-desc">
+              Binary uses KiB, MiB, GiB. Decimal uses KB, MB, GB. This only affects display.
+            </div>
+          </div>
+          <div className="setting-control">
+            <Select
+              ariaLabel="Size units"
+              width={190}
+              value={draft.units}
+              onChange={v => setDraft({ ...draft, units: v as Units })}
+              options={[
+                { value: "binary", label: "Binary (KiB, MiB, GiB)" },
+                { value: "decimal", label: "Decimal (KB, MB, GB)" },
+              ]}
+            />
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Minimise to tray</div>
+            <div className="setting-desc">
+              Closing the window hides it to the system tray and keeps torrenting. Quit from the
+              tray menu to exit properly.
+            </div>
+          </div>
+          <div className="setting-control">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={draft.minimizeToTray}
+                onChange={e => setDraft({ ...draft, minimizeToTray: e.target.checked })}
+              />
+              <span className="switch-track" aria-hidden="true" />
+            </label>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Stop seeding at</div>
+            <div className="setting-desc">
+              Pause a torrent once it reaches either limit. Resuming it manually seeds past them.
+              Seed time counts from when the app first sees the torrent complete, so it restarts
+              on relaunch.
+            </div>
+          </div>
+          <div className="setting-control">
+            <label className="limit-field">
+              <span>Ratio</span>
+              <input
+                type="number"
+                className="filter-input port-input"
+                min={0}
+                step={0.1}
+                placeholder="∞"
+                value={draft.seedRatioLimit ?? ""}
+                onChange={e =>
+                  setDraft({
+                    ...draft,
+                    seedRatioLimit: e.target.value ? Number(e.target.value) : null,
+                  })
+                }
+              />
+            </label>
+            <label className="limit-field">
+              <span>Minutes</span>
+              <input
+                type="number"
+                className="filter-input port-input"
+                min={0}
+                placeholder="∞"
+                value={draft.seedTimeLimit ?? ""}
+                onChange={e =>
+                  setDraft({
+                    ...draft,
+                    seedTimeLimit: e.target.value ? Number(e.target.value) : null,
+                  })
+                }
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Maximum active downloads</div>
+            <div className="setting-desc">
+              Torrents past this limit wait their turn and show as Queued. Oldest first, so the
+              ones nearest completion keep their slots. Blank means no limit.
+            </div>
+          </div>
+          <div className="setting-control">
+            <input
+              type="number"
+              className="filter-input port-input"
+              min={1}
+              placeholder="∞"
+              value={draft.maxActiveDownloads ?? ""}
+              onChange={e =>
+                setDraft({
+                  ...draft,
+                  maxActiveDownloads: e.target.value ? Number(e.target.value) : null,
+                })
+              }
+            />
+          </div>
+        </div>
+      </>
+    );
+
+    return (
+      <div className="settings-page">
+        {settingsError && <div className="modal-error">{settingsError}</div>}
+        <div className="settings-list">{settingsTab === "network" ? network : app}</div>
+        <p className="settings-note">
+          Applying network changes restarts the torrent engine. Any existing streams will be
+          restarted automatically.
+        </p>
       </div>
     );
   };
@@ -1571,227 +2043,39 @@ export default function TorrentClient() {
         </div>
       )}
 
-      {showSettings && draft && (
-        <div className="modal-overlay" role="dialog" aria-modal="true" onClick={() => setShowSettings(false)}>
-          <div className="modal modal-settings" onClick={e => e.stopPropagation()}>
-            <div className="modal-title">Network</div>
-            <div className="modal-body">
-              {settingsError && <div className="modal-error">{settingsError}</div>}
-
-              <div className="settings-list">
-                <div className="setting-row">
-                  <div className="setting-text">
-                    <div className="setting-label">Incoming port</div>
-                    <div className="setting-desc">
-                      For VPNs, select manual and enter the port provided by the VPN client.
-                    </div>
-                  </div>
-                  <div className="setting-control">
-                    <Select
-                      ariaLabel="Port mode"
-                      width={132}
-                      value={portMode}
-                      onChange={v => setPortMode(v as "auto" | "fixed")}
-                      options={[
-                        { value: "auto", label: "Automatic" },
-                        { value: "fixed", label: "Manual" },
-                      ]}
-                    />
-                    {portMode === "fixed" && (
-                      <input
-                        type="number"
-                        className="filter-input port-input"
-                        min={1}
-                        max={65535}
-                        placeholder="6881"
-                        value={draft.listenPort ?? ""}
-                        onChange={e =>
-                          setDraft({
-                            ...draft,
-                            listenPort: e.target.value ? Number(e.target.value) : null,
-                          })
-                        }
-                      />
-                    )}
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-text">
-                    <div className="setting-label">Network interface</div>
-                    <div className="setting-desc">
-                      Connects all trackers, DHT, and peers to the bound interface. Leave on Any to use all interfaces. Recommended to prevent IP leaks.
-                    </div>
-                  </div>
-                  <div className="setting-control">
-                    <Select
-                      ariaLabel="Network interface"
-                      width={230}
-                      value={draft.bindIp ?? ""}
-                      onChange={v => setDraft({ ...draft, bindIp: v || null })}
-                      options={[
-                        { value: "", label: "Any" },
-                        ...interfaces.map(i => ({
-                          value: i.ip,
-                          label: `${i.name} — ${i.ip}${i.isLoopback ? " (loopback)" : ""}`,
-                        })),
-                      ]}
-                    />
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-text">
-                    <div className="setting-label">Speed limits</div>
-                    <div className="setting-desc">
-                      Provide KiB/s. Leave empty for unlimited. 
-                    </div>
-                  </div>
-                  <div className="setting-control">
-                    <label className="limit-field">
-                      <span>Down</span>
-                      <input
-                        type="number"
-                        className="filter-input port-input"
-                        min={0}
-                        placeholder="∞"
-                        value={draft.downloadLimit ?? ""}
-                        onChange={e =>
-                          setDraft({
-                            ...draft,
-                            downloadLimit: e.target.value ? Number(e.target.value) : null,
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="limit-field">
-                      <span>Up</span>
-                      <input
-                        type="number"
-                        className="filter-input port-input"
-                        min={0}
-                        placeholder="∞"
-                        value={draft.uploadLimit ?? ""}
-                        onChange={e =>
-                          setDraft({
-                            ...draft,
-                            uploadLimit: e.target.value ? Number(e.target.value) : null,
-                          })
-                        }
-                      />
-                    </label>
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-text">
-                    <div className="setting-label">Peer country database</div>
-                    <div className="setting-desc truncate">
-                      {draft.geoipPath
-                        ? draft.geoipPath
-                        : geoip?.loaded
-                          ? `${geoip.databaseType ?? "Unknown"} built ${geoip.built ?? "?"} · ${
-                              geoip.attribution ?? ""
-                            }`
-                          : "No database loaded - peer flags are hidden."}
-                    </div>
-                  </div>
-                  <div className="setting-control">
-                    {draft.geoipPath && (
-                      <button
-                        className="btn"
-                        type="button"
-                        onClick={() => setDraft({ ...draft, geoipPath: null })}
-                      >
-                        Use bundled
-                      </button>
-                    )}
-                    <button
-                      className="btn"
-                      type="button"
-                      onClick={async () => {
-                        const f = await open({
-                          multiple: false,
-                          filters: [{ name: "MaxMind DB", extensions: ["mmdb"] }],
-                        });
-                        if (typeof f === "string") setDraft({ ...draft, geoipPath: f });
-                      }}
-                    >
-                      Choose
-                    </button>
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-text">
-                    <div className="setting-label">Size units</div>
-                    <div className="setting-desc">
-                      Binary uses KiB, MiB, GiB. Decimal uses KB, MB, GB. This only affects display.
-                    </div>
-                  </div>
-                  <div className="setting-control">
-                    <Select
-                      ariaLabel="Size units"
-                      width={190}
-                      value={draft.units}
-                      onChange={v => setDraft({ ...draft, units: v as Units })}
-                      options={[
-                        { value: "binary", label: "Binary (KiB, MiB, GiB)" },
-                        { value: "decimal", label: "Decimal (KB, MB, GB)" },
-                      ]}
-                    />
-                  </div>
-                </div>
-
-                <div className="setting-row">
-                  <div className="setting-text">
-                    <div className="setting-label">UPnP forwarding</div>
-                    <div className="setting-desc">
-                     VPNs mostly use NAT-PMP, please manually select port for these. Routers can use UPnP.
-                    </div>
-                  </div>
-                  <div className="setting-control">
-                    <label className="switch">
-                      <input
-                        type="checkbox"
-                        checked={draft.upnp}
-                        onChange={e => setDraft({ ...draft, upnp: e.target.checked })}
-                      />
-                      <span className="switch-track" aria-hidden="true" />
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              <div className="modal-actions">
-                <span className="modal-actions-note">
-                  Applying restarts QuantumTorrent. Any existing streams will be restarted automatically.
-                </span>
-                <button className="btn" type="button" onClick={() => setShowSettings(false)} disabled={busy}>
-                  Cancel
-                </button>
-                <button className="btn btn-primary" type="button" onClick={handleSaveSettings} disabled={busy}>
-                  {busy ? "Applying" : "Apply"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {removeTarget && (
         <div className="modal-overlay" role="dialog" aria-modal="true" onClick={() => setRemoveTarget(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-title">Remove torrent</div>
+            <div className="modal-title">
+              {removeTarget.length > 1 ? `Remove ${removeTarget.length} torrents` : "Remove torrent"}
+            </div>
             <AutoHeight>
             <div className="modal-body">
               <div className="dialog-subject">
-                <div className="dialog-subject-name" title={removeTarget.name}>
-                  {removeTarget.name}
-                </div>
-                <div className="dialog-subject-meta">
-                  {removeTarget.size} · {STATUS_LABELS[removeTarget.status]}
-                </div>
+                {removeTarget.length === 1 ? (
+                  <>
+                    <div className="dialog-subject-name" title={removeTarget[0].name}>
+                      {removeTarget[0].name}
+                    </div>
+                    <div className="dialog-subject-meta">
+                      {removeTarget[0].size} · {STATUS_LABELS[removeTarget[0].status]}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div
+                      className="dialog-subject-name"
+                      title={removeTarget.map(t => t.name).join("\n")}
+                    >
+                      {removeTarget.slice(0, 3).map(t => t.name).join(", ")}
+                      {removeTarget.length > 3 && ` and ${removeTarget.length - 3} more`}
+                    </div>
+                    <div className="dialog-subject-meta">
+                      {removeTarget.length} torrents selected
+                    </div>
+                  </>
+                )}
               </div>
               <label className="checkbox-row">
                 <input
@@ -1803,7 +2087,10 @@ export default function TorrentClient() {
               </label>
               {deleteFiles && (
                 <p className="field-warning">
-                  {removeTarget.size} will be permanently deleted from your disk. This is irreversible.
+                  {removeTarget.length === 1
+                    ? `${removeTarget[0].size} will be permanently deleted from your disk.`
+                    : `The downloaded files for these ${removeTarget.length} torrents will be permanently deleted from your disk.`}
+                  {" "}This is irreversible.
                 </p>
               )}
               <div className="modal-actions">
@@ -1832,7 +2119,23 @@ export default function TorrentClient() {
       <div className="toolbar">
 
         <div className="toolbar-group" key="toolbar-left">
-          {view === "search" ? (
+          {view === "settings" ? (
+            <div className="toolbar-actions" key="settings">
+              <button className="btn" type="button" onClick={leaveSettings} disabled={busy}>
+                <Icon name="chevronLeft" />
+                Back
+              </button>
+              <span className="toolbar-divider" />
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={handleSaveSettings}
+                disabled={busy}
+              >
+                {busy ? "Applying" : "Apply"}
+              </button>
+            </div>
+          ) : view === "search" ? (
             <div className="toolbar-actions" key="search">
               <button className="btn" type="button" onClick={leaveSearch}>
                 <Icon name="chevronLeft" />
@@ -1863,7 +2166,7 @@ export default function TorrentClient() {
                 className="btn"
                 type="button"
                 onClick={() => openFilesModal()}
-                disabled={selectedId === null}
+                disabled={selectedIds.size !== 1}
               >
                 <Icon name="files" />
                 Files
@@ -1871,18 +2174,20 @@ export default function TorrentClient() {
               <button
                 className="btn"
                 type="button"
-                onClick={() => sel && setRemoveTarget(sel)}
-                disabled={selectedId === null}
+                onClick={() => selectedTorrents.length > 0 && setRemoveTarget(selectedTorrents)}
+                disabled={selectedIds.size === 0}
               >
                 <Icon name="remove" />
-                Remove
+                {selectedIds.size > 1 ? `Remove ${selectedIds.size}` : "Remove"}
               </button>
             </div>
           )}
         </div>
 
         <div
-          className={`search-field${view === "search" ? " search-field-grow" : ""}`}
+          className={`search-field${view === "search" ? " search-field-grow" : ""}${
+            view === "settings" ? " search-field-hidden" : ""
+          }`}
           key="toolbar-search"
         >
           <Icon name="search" className="search-icon" size={18} />
@@ -1916,12 +2221,28 @@ export default function TorrentClient() {
       </div>
 
       <div className="sidebar">
-        <div className="section-label">{displayedView === "search" ? "Sources" : "State"}</div>
+        <div className="section-label">
+          {displayedView === "search" ? "Sources" : displayedView === "settings" ? "Settings" : "State"}
+        </div>
         <div
           className={`view-swap${viewLeaving ? " leaving" : ""}`}
           key={`sidebar-${displayedView}`}
         >
-        {displayedView === "search" ? (
+        {displayedView === "settings" ? (
+          ([
+            { id: "network", label: "Network" },
+            { id: "app", label: "Application" },
+          ] as const).map(c => (
+            <button
+              key={c.id}
+              type="button"
+              className={`sidebar-item${settingsTab === c.id ? " active" : ""}`}
+              onClick={() => setSettingsTab(c.id)}
+            >
+              <span>{c.label}</span>
+            </button>
+          ))
+        ) : displayedView === "search" ? (
           <>
             {plugins.map(p => (
               <button
@@ -1969,7 +2290,9 @@ export default function TorrentClient() {
           className={`view-swap view-swap-fill${viewLeaving ? " leaving" : ""}`}
           key={`main-${displayedView}`}
         >
-        {displayedView === "search" ? (
+        {displayedView === "settings" ? (
+          renderSettingsPage()
+        ) : displayedView === "search" ? (
           renderSearchPage()
         ) : torrents.length === 0 ? (
           <div className="empty-state">
@@ -1980,7 +2303,7 @@ export default function TorrentClient() {
             <p>No torrents exist for this filter.</p>
           </div>
         ) : (
-          <div className="torrents" role="table">
+          <div className="torrents" role="grid" aria-multiselectable="true">
             <div className="torrents-header" role="row">
               {COLUMNS.map(col => (
                 <div
@@ -2014,30 +2337,31 @@ export default function TorrentClient() {
                   key={t.id}
                   role="row"
                   tabIndex={exiting ? -1 : 0}
-                  aria-selected={selectedId === t.id}
-                  className={`torrent-row${selectedId === t.id ? " selected" : ""}${exiting ? " exiting" : ""}`}
+                  aria-selected={selectedIds.has(t.id)}
+                  className={`torrent-row${selectedIds.has(t.id) ? " selected" : ""}${exiting ? " exiting" : ""}`}
                   title={t.error ?? undefined}
-                  onClick={() => setSelectedId(t.id)}
-                  onDoubleClick={() => { setSelectedId(t.id); openFilesModal(t.id); }}
+                  onClick={e => handleRowClick(e, t)}
+                  onDoubleClick={() => { selectOnly(t.id); openFilesModal(t.id); }}
                   onContextMenu={e => {
                     e.preventDefault();
-                    setSelectedId(t.id);
+                    if (!selectedIds.has(t.id)) selectOnly(t.id);
+                    else setSelectedId(t.id);
                     setMenu({ x: e.clientX, y: e.clientY, torrent: t });
                   }}
                   onKeyDown={e => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      setSelectedId(t.id);
+                      selectOnly(t.id);
                     }
                   }}
                 >
-                  <div className="cell name" role="cell">{t.name}</div>
-                  <div className="cell num" role="cell">{t.size}</div>
-                  <div className="cell" role="cell"><ProgressBar progress={t.progress} status={t.status} /></div>
-                  <div className="cell" role="cell"><StatusPill status={t.status} /></div>
-                  <div className="cell num" role="cell">{t.down}</div>
-                  <div className="cell num" role="cell">{t.up}</div>
-                  <div className="cell num" role="cell">{t.eta}</div>
+                  <div className="cell name" role="gridcell">{t.name}</div>
+                  <div className="cell num" role="gridcell">{t.size}</div>
+                  <div className="cell" role="gridcell"><ProgressBar progress={t.progress} status={t.status} /></div>
+                  <div className="cell" role="gridcell"><StatusPill status={t.status} /></div>
+                  <div className="cell num" role="gridcell">{t.down}</div>
+                  <div className="cell num" role="gridcell">{t.up}</div>
+                  <div className="cell num" role="gridcell">{t.eta}</div>
                 </div>
               ))}
             </div>

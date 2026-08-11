@@ -5,8 +5,10 @@ changes listed below. Everything else is byte-identical to upstream.
 
 Re-vendoring from scratch: copy the crate out of the cargo registry
 (`~/.cargo/registry/src/*/librqbit-8.1.1`), delete `.cargo-ok`, then re-apply
-these three edits. Each is marked in the source with a `LOCAL PATCH:` comment,
-so `grep -rn "LOCAL PATCH" src/` finds all of them.
+the eight patch sets below (A-H). Each edit is marked in the source with a
+`LOCAL PATCH:` comment, so `grep -rn "LOCAL PATCH" src/` finds all of them —
+28 sites across this crate and `librqbit-tracker-comms`. If that count doesn't
+match after a re-vendor, something was missed.
 
 ## Why
 
@@ -62,6 +64,14 @@ than silently falling back to an unbound socket.
 Path 5 lives in a second crate, vendored alongside this one at
 `../librqbit-tracker-comms`, with `UdpTrackerClient::new` taking an extra
 `bind_ip` argument. `Cargo.toml` points at it by path.
+
+### Known trade-off
+
+Setting `bind_ip` disables **DHT routing-table persistence**.
+`PersistentDht::create` accepts no listen address (`PersistentDhtConfig` only
+carries `dump_interval` / `config_filename`), so binding the DHT socket requires
+the non-persistent `DhtBuilder::with_config` path. Cost: slower DHT bootstrap
+after a restart. Fixing this properly means vendoring `librqbit-dht` as well.
 
 ## Patch set C — output folder accessor
 
@@ -122,17 +132,44 @@ Per-peer **speed** is deliberately not patched in: librqbit only counts
 cumulative `fetched_bytes`, and the app derives a rate by sampling that across
 its one-second polls.
 
-### Known trade-off
+## Patch set G — per-peer upload counters
 
-Setting `bind_ip` disables **DHT routing-table persistence**.
-`PersistentDht::create` accepts no listen address (`PersistentDhtConfig` only
-carries `dump_interval` / `config_filename`), so binding the DHT socket requires
-the non-persistent `DhtBuilder::with_config` path. Cost: slower DHT bootstrap
-after a restart. Fixing this properly means vendoring `librqbit-dht` as well.
+`PeerCountersAtomic::uploaded_bytes` plus the matching field on the snapshot,
+incremented in `on_uploaded_bytes` (`torrent_state/live/mod.rs`).
+
+Upstream counts uploads **only** against the session and torrent totals, never
+against the peer they went to. Without this the peers tab can show what each
+peer sent us but not what we sent them, which reads as a bug while seeding —
+every peer sits at zero even though the torrent's upload total is climbing.
+
+Symmetric with the `fetched_bytes` counter upstream already keeps, and the app
+derives an upload rate from it the same way it derives download rate.
+
+## Patch set H — user agent
+
+`SessionOptions::user_agent: Option<String>`, used in two places in
+`session.rs`: the `User-Agent` header on HTTP tracker announces, and the
+`reqwest` client build.
+
+Upstream leaves both at reqwest's default, so the client is invisible as itself
+and announces as a generic HTTP library. Some trackers key behaviour off the
+user agent. `None` reproduces upstream behaviour.
+
+This is separate from the BitTorrent **peer id** (`SessionOptions::peer_id`),
+which is upstream and needs no patch — the app sets an Azureus-style `qT` id
+there.
 
 ## Upstreaming
 
-This is worth sending to https://github.com/ikatson/rqbit — it's a small
-additive change and the "am I firewalled" question is common to every torrent
-client. If it lands upstream, delete `vendor/` and point `librqbit` back at
-crates.io.
+These are worth sending to https://github.com/ikatson/rqbit, but not as one
+change. A, C, F, G and H are small and purely additive — nothing upstream
+behaves differently unless a caller opts in — so they stand alone and are the
+obvious first candidates. D and E add public API and touch control flow. B is
+the invasive one: it threads a new option through five sockets in two crates,
+and carries the DHT persistence trade-off above, so it would need discussion
+rather than a drive-by PR.
+
+If all of it lands upstream, delete `vendor/`, drop the `librqbit-tracker-comms`
+path override, and point `librqbit` back at crates.io. If only some lands, the
+patch sets are independent — keep the vendored copy and drop the sets that
+were accepted.

@@ -1,3 +1,4 @@
+mod preview;
 mod search;
 
 use std::collections::{HashMap, HashSet};
@@ -8,7 +9,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::menu::{Menu, MenuItem};
 use tauri::path::BaseDirectory;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_deep_link::DeepLinkExt;
 
@@ -39,6 +43,16 @@ struct Settings {
     upload_limit: Option<u32>,
     #[serde(default)]
     disabled_plugins: Vec<String>,
+    #[serde(default)]
+    compact: bool,
+    #[serde(default)]
+    seed_ratio_limit: Option<f32>,
+    #[serde(default)]
+    seed_time_limit: Option<u32>,
+    #[serde(default)]
+    max_active_downloads: Option<u32>,
+    #[serde(default)]
+    minimize_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -52,6 +66,11 @@ impl Default for Settings {
             download_limit: None,
             upload_limit: None,
             disabled_plugins: Vec::new(),
+            compact: false,
+            seed_ratio_limit: None,
+            seed_time_limit: None,
+            max_active_downloads: None,
+            minimize_to_tray: false,
         }
     }
 }
@@ -106,6 +125,11 @@ struct AppState {
     download_dir: PathBuf,
     pending: Mutex<HashMap<String, PendingTorrent>>,
     inbox: Mutex<Vec<String>>,
+    queued: Mutex<HashSet<usize>>,
+    seed_done: Mutex<HashSet<usize>>,
+    seed_since: Mutex<HashMap<usize, Instant>>,
+    quitting: AtomicBool,
+    preview: tokio::sync::Mutex<Option<preview::PreviewServer>>,
 }
 
 impl AppState {
@@ -266,7 +290,12 @@ fn format_speed(mbps: f64, units: Units) -> String {
     format!("{:.*} {}/s", SIZE_DECIMALS[i], v, n[i])
 }
 
-fn torrent_to_info(id: usize, handle: &Arc<ManagedTorrent>, units: Units) -> TorrentInfo {
+fn torrent_to_info(
+    id: usize,
+    handle: &Arc<ManagedTorrent>,
+    units: Units,
+    queued: &HashSet<usize>,
+) -> TorrentInfo {
     let stats = handle.stats();
     let name = handle.name().unwrap_or_else(|| format!("Torrent #{}", id));
 
@@ -275,7 +304,9 @@ fn torrent_to_info(id: usize, handle: &Arc<ManagedTorrent>, units: Units) -> Tor
         TorrentStatsState::Live => {
             if stats.finished { "seeding" } else { "downloading" }
         }
-        TorrentStatsState::Paused => "paused",
+        TorrentStatsState::Paused => {
+            if queued.contains(&id) { "queued" } else { "paused" }
+        }
         TorrentStatsState::Error => "error",
     };
 
@@ -489,6 +520,72 @@ async fn get_torrent_files(
 }
 
 #[tauri::command]
+async fn preview_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: usize,
+    file_index: usize,
+) -> Result<String, String> {
+    let handle = state
+        .session()
+        .get(TorrentIdOrHash::Id(id))
+        .ok_or_else(|| format!("Torrent {id} not found"))?;
+
+    let name = {
+        let metadata = handle.metadata.load();
+        let metadata = metadata
+            .as_ref()
+            .ok_or_else(|| "Metadata not resolved yet — still checking.".to_string())?;
+        let fi = metadata
+            .file_infos
+            .get(file_index)
+            .ok_or_else(|| format!("File {file_index} not found"))?;
+        fi.relative_filename
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string())
+    };
+
+    let mut guard = state.preview.lock().await;
+    if guard.is_none() {
+        let resolver: preview::Resolver = Arc::new(move |id| {
+            app.try_state::<AppState>()
+                .and_then(|s| s.session().get(TorrentIdOrHash::Id(id)))
+        });
+        *guard = Some(
+            preview::start(resolver)
+                .await
+                .map_err(|e| format!("Could not start preview server: {e:#}"))?,
+        );
+    }
+    let server = guard.as_ref().unwrap();
+
+    Ok(format!(
+        "http://127.0.0.1:{}/{}/{}/{}/{}",
+        server.port,
+        server.token,
+        id,
+        file_index,
+        urlencoding_path(&name)
+    ))
+}
+
+/// Percent-encodes anything that would break the path segment. The filename is
+/// there so players can see an extension and pick a demuxer.
+fn urlencoding_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+#[tauri::command]
 async fn update_torrent_files(
     state: State<'_, AppState>,
     id: usize,
@@ -513,8 +610,9 @@ async fn update_torrent_files(
 #[tauri::command]
 async fn get_torrents(state: State<'_, AppState>) -> Result<Vec<TorrentInfo>, String> {
     let units = state.units();
+    let queued = state.queued.lock().unwrap().clone();
     Ok(state.session().with_torrents(|iter| {
-        iter.map(|(id, handle)| torrent_to_info(id, handle, units))
+        iter.map(|(id, handle)| torrent_to_info(id, handle, units, &queued))
             .collect::<Vec<_>>()
     }))
 }
@@ -526,6 +624,8 @@ const CONNECTING_GRACE_SECS: u64 = 60;
 const BIND_DROPOUT_GRACE_SECS: u64 = 25;
 
 const BIND_POLL: Duration = Duration::from_secs(3);
+
+const MANAGE_POLL: Duration = Duration::from_secs(5);
 
 const LISTEN_PORTS: std::ops::Range<u16> = 6881..6891;
 
@@ -568,6 +668,178 @@ fn session_options(settings: &Settings, listen: bool) -> SessionOptions {
         ratelimits: settings.limits(),
         ..Default::default()
     }
+}
+
+fn reveal_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Show QuantumTorrent", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("QuantumTorrent")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => reveal_window(app),
+            "quit" => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.quitting.store(true, Ordering::SeqCst);
+                }
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                reveal_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+
+    builder.build(app)?;
+    Ok(())
+}
+
+struct TorrentSnap {
+    id: usize,
+    handle: Arc<ManagedTorrent>,
+    finished: bool,
+    paused: bool,
+    live: bool,
+    uploaded: u64,
+    total: u64,
+}
+
+fn spawn_torrent_manager<R: Runtime>(handle: AppHandle<R>) {
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(MANAGE_POLL);
+        loop {
+            tick.tick().await;
+            let Some(state) = handle.try_state::<AppState>() else { continue };
+
+            let settings = state.settings.read().unwrap().clone();
+            let session = state.session();
+
+            let snaps: Vec<TorrentSnap> = session.with_torrents(|iter| {
+                iter.map(|(id, h)| {
+                    let s = h.stats();
+                    TorrentSnap {
+                        id,
+                        handle: h.clone(),
+                        finished: s.finished,
+                        paused: matches!(s.state, TorrentStatsState::Paused),
+                        live: matches!(s.state, TorrentStatsState::Live),
+                        uploaded: s.uploaded_bytes,
+                        total: s.total_bytes,
+                    }
+                })
+                .collect::<Vec<_>>()
+            });
+
+            let alive: HashSet<usize> = snaps.iter().map(|s| s.id).collect();
+            state.queued.lock().unwrap().retain(|id| alive.contains(id));
+            state.seed_done.lock().unwrap().retain(|id| alive.contains(id));
+            state.seed_since.lock().unwrap().retain(|id, _| alive.contains(id));
+
+            for s in &snaps {
+                if !s.live || !s.finished {
+                    continue;
+                }
+                // A torrent that already hit its limit stays hit. Without this a
+                // manual resume would just be undone on the next tick.
+                if state.seed_done.lock().unwrap().contains(&s.id) {
+                    continue;
+                }
+
+                let started = {
+                    let mut m = state.seed_since.lock().unwrap();
+                    *m.entry(s.id).or_insert_with(Instant::now)
+                };
+
+                let ratio_hit = settings
+                    .seed_ratio_limit
+                    .filter(|l| *l > 0.0)
+                    .is_some_and(|l| s.total > 0 && s.uploaded as f64 / s.total as f64 >= l as f64);
+                let time_hit = settings
+                    .seed_time_limit
+                    .filter(|m| *m > 0)
+                    .is_some_and(|m| started.elapsed() >= Duration::from_secs(m as u64 * 60));
+
+                if (ratio_hit || time_hit) && session.pause(&s.handle).await.is_ok() {
+                    state.seed_done.lock().unwrap().insert(s.id);
+                    state.queued.lock().unwrap().remove(&s.id);
+                }
+            }
+
+            match settings.max_active_downloads.filter(|m| *m > 0) {
+                Some(max) => {
+                    let max = max as usize;
+                    let mut active: Vec<usize> = snaps
+                        .iter()
+                        .filter(|s| s.live && !s.finished)
+                        .map(|s| s.id)
+                        .collect();
+                    active.sort_unstable();
+
+                    if active.len() > max {
+                        // Oldest first, so the ones nearest completion keep their slots.
+                        for id in &active[max..] {
+                            let Some(s) = snaps.iter().find(|s| s.id == *id) else { continue };
+                            if session.pause(&s.handle).await.is_ok() {
+                                state.queued.lock().unwrap().insert(*id);
+                            }
+                        }
+                    } else {
+                        let mut slots = max - active.len();
+                        let mut waiting: Vec<usize> =
+                            state.queued.lock().unwrap().iter().copied().collect();
+                        waiting.sort_unstable();
+                        for id in waiting {
+                            if slots == 0 {
+                                break;
+                            }
+                            let Some(s) = snaps.iter().find(|s| s.id == id) else { continue };
+                            if !s.paused || s.finished {
+                                state.queued.lock().unwrap().remove(&id);
+                                continue;
+                            }
+                            if session.unpause(&s.handle).await.is_ok() {
+                                state.queued.lock().unwrap().remove(&id);
+                                slots -= 1;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // Limit switched off - let everything the queue paused go.
+                    let waiting: Vec<usize> =
+                        state.queued.lock().unwrap().iter().copied().collect();
+                    for id in waiting {
+                        let Some(s) = snaps.iter().find(|s| s.id == id) else { continue };
+                        if !s.paused || session.unpause(&s.handle).await.is_ok() {
+                            state.queued.lock().unwrap().remove(&id);
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn spawn_bind_monitor<R: Runtime>(handle: AppHandle<R>) {
@@ -1449,6 +1721,7 @@ async fn pause_torrent(state: State<'_, AppState>, id: usize) -> Result<(), Stri
         .session()
         .get(TorrentIdOrHash::Id(id))
         .ok_or_else(|| format!("Torrent {id} not found"))?;
+    state.queued.lock().unwrap().remove(&id);
     state.session().pause(&handle).await.map_err(|e| format!("{e:#}"))
 }
 
@@ -1458,6 +1731,13 @@ async fn resume_torrent(state: State<'_, AppState>, id: usize) -> Result<(), Str
         .session()
         .get(TorrentIdOrHash::Id(id))
         .ok_or_else(|| format!("Torrent {id} not found"))?;
+    state.queued.lock().unwrap().remove(&id);
+    // Resuming an already-finished torrent is a deliberate "seed past the
+    // limit", so exempt it. Resuming one that is still downloading is not.
+    if handle.stats().finished {
+        state.seed_done.lock().unwrap().insert(id);
+    }
+    state.seed_since.lock().unwrap().remove(&id);
     state.session().unpause(&handle).await.map_err(|e| format!("{e:#}"))
 }
 
@@ -1497,6 +1777,17 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else { return };
+            let Some(state) = window.app_handle().try_state::<AppState>() else { return };
+            if state.quitting.load(Ordering::SeqCst) {
+                return;
+            }
+            if state.settings.read().unwrap().minimize_to_tray {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             let download_dir = app
                 .path()
@@ -1552,6 +1843,11 @@ pub fn run() {
                 download_dir,
                 pending: Mutex::new(HashMap::new()),
                 inbox: Mutex::new(Vec::new()),
+                queued: Mutex::new(HashSet::new()),
+                seed_done: Mutex::new(HashSet::new()),
+                seed_since: Mutex::new(HashMap::new()),
+                quitting: AtomicBool::new(false),
+                preview: tokio::sync::Mutex::new(None),
             });
 
             #[cfg(any(windows, target_os = "linux"))]
@@ -1573,6 +1869,8 @@ pub fn run() {
             }
 
             spawn_bind_monitor(app.handle().clone());
+            spawn_torrent_manager(app.handle().clone());
+            build_tray(app.handle())?;
 
             // Fall back to the bundled DB-IP Lite database when the user
             // hasn't pointed at their own.
@@ -1606,6 +1904,7 @@ pub fn run() {
             cancel_preview,
             get_torrent_files,
             update_torrent_files,
+            preview_file,
             take_pending_opens,
             remove_torrent,
             pause_torrent,
