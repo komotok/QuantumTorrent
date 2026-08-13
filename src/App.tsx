@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { THEMES, applyTheme } from "./themes";
 import "./torrent-theme.css";
 import "./TorrentClient.css";
 
@@ -410,6 +411,7 @@ interface Settings {
   downloadLimit: number | null;
   uploadLimit: number | null;
   compact: boolean;
+  theme: string;
   seedRatioLimit: number | null;
   seedTimeLimit: number | null;
   maxActiveDownloads: number | null;
@@ -721,6 +723,9 @@ export default function TorrentClient() {
   const [compact, setCompact] = useState(() => {
     try { return localStorage.getItem("compact") === "1"; } catch { return false; }
   });
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem("theme") ?? "default"; } catch { return "default"; }
+  });
   const [filter, setFilter] = useState<FilterState>("all");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -757,6 +762,7 @@ export default function TorrentClient() {
       .then(s => {
         setUnits(s.units);
         setCompact(s.compact);
+        setTheme(s.theme);
       })
       .catch(e => console.error("get_settings failed:", e));
   }, []);
@@ -765,6 +771,11 @@ export default function TorrentClient() {
     document.documentElement.dataset.density = compact ? "compact" : "comfortable";
     try { localStorage.setItem("compact", compact ? "1" : "0"); } catch {}
   }, [compact]);
+
+  useEffect(() => {
+    applyTheme(theme);
+    try { localStorage.setItem("theme", theme); } catch {}
+  }, [theme]);
 
   useEffect(() => {
     const block = (e: Event) => e.preventDefault();
@@ -1333,6 +1344,7 @@ export default function TorrentClient() {
       setConn(status);
       setUnits(payload.units);
       setCompact(payload.compact);
+      setTheme(payload.theme);
       leaveSettings();
     } catch (e) {
       setSettingsError(String(e));
@@ -1682,6 +1694,24 @@ export default function TorrentClient() {
 
     const app = (
       <>
+        <div className="setting-row">
+          <div className="setting-text">
+            <div className="setting-label">Theme</div>
+            <div className="setting-desc">
+              Changes the current theme. Applies instantly.
+            </div>
+          </div>
+          <div className="setting-control">
+            <Select
+              ariaLabel="Theme"
+              width={190}
+              value={draft.theme}
+              onChange={v => setDraft({ ...draft, theme: v })}
+              options={THEMES.map(t => ({ value: t.id, label: t.name }))}
+            />
+          </div>
+        </div>
+
         <div className="setting-row">
           <div className="setting-text">
             <div className="setting-label">Compact mode</div>

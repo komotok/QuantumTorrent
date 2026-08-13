@@ -1,0 +1,20 @@
+
+:root {
+  --gray-950: #0a0e15;
+  --gray-900: #0f141d;
+  --gray-850: #141a25;
+  --gray-800: #1a2130;
+  --gray-750: #212a3b;
+  --gray-700: #2b3648;
+  --gray-600: #3b4859;
+  --gray-500: #5b6b81;
+  --gray-400: #8194ab;
+  --gray-300: #a8b7c9;
+  --gray-100: #dee5ee;
+  --gray-50: #f3f6fa;
+
+  --accent-500: #593bde;
+  --accent-hover: #09357b;
+  --accent-active: #24589f;
+  --accent-muted: rgba(47, 111, 208, 0.16);
+}

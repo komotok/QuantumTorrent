@@ -1,0 +1,21 @@
+:root {
+  --gray-950: #ffffff;
+  --gray-900: #f7f7f7;
+  --gray-850: #e4e4e1;
+  --gray-800: #f4f4f4;
+  --gray-750: #d6d6d1;
+  --gray-700: #cacac4;
+  --gray-600: #b8b8b0;
+  --gray-500: #95958b;
+  --gray-400: #6d6d63;
+  --gray-300: #4b4b42;
+  --gray-100: #191915;
+  --gray-50: #090907;
+
+  --accent-500: #373636;
+  --accent-hover: #292929;
+  --accent-active: #010000;
+  --accent-muted: rgba(240, 116, 130, 0.16);
+
+  --font-sans: "Playpen Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
