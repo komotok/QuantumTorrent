@@ -45,6 +45,8 @@ struct Settings {
     disabled_plugins: Vec<String>,
     #[serde(default)]
     compact: bool,
+    #[serde(default = "default_theme")]
+    theme: String,
     #[serde(default)]
     seed_ratio_limit: Option<f32>,
     #[serde(default)]
@@ -53,6 +55,10 @@ struct Settings {
     max_active_downloads: Option<u32>,
     #[serde(default)]
     minimize_to_tray: bool,
+}
+
+fn default_theme() -> String {
+    "default".to_string()
 }
 
 impl Default for Settings {
@@ -67,6 +73,7 @@ impl Default for Settings {
             upload_limit: None,
             disabled_plugins: Vec::new(),
             compact: false,
+            theme: default_theme(),
             seed_ratio_limit: None,
             seed_time_limit: None,
             max_active_downloads: None,
